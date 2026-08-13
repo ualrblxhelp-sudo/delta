@@ -265,6 +265,7 @@ export async function handleChatInputCommand(
     : `/${route.commandName}`;
 
   await interaction.reply({
+    ephemeral: true,
     embeds: [createPlaceholderEmbed(guildConfig, commandPath)]
   });
 }
