@@ -4,8 +4,7 @@ type Config = {
   discordToken: string;
   supabaseUrl: string;
   supabaseSecretKey: string;
-  discordClientId?: string;
-  discordGuildId?: string;
+  discordClientId: string;
   robloxCookie?: string;
 };
 
@@ -24,8 +23,7 @@ export function loadConfig(): Config {
     discordToken: requireEnv("DISCORD_TOKEN"),
     supabaseUrl: requireEnv("SUPABASE_URL"),
     supabaseSecretKey: requireEnv("SUPABASE_SECRET_KEY"),
-    discordClientId: process.env.DISCORD_CLIENT_ID,
-    discordGuildId: process.env.DISCORD_GUILD_ID,
+    discordClientId: requireEnv("DISCORD_CLIENT_ID"),
     robloxCookie: process.env.ROBLOX_COOKIE
   };
 }
