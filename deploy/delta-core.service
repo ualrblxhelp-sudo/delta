@@ -1,0 +1,15 @@
+[Unit]
+Description=Delta Core Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc/delta-core
+ExecStart=/usr/bin/node /home/opc/delta-core/dist/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
