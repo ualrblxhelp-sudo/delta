@@ -19,16 +19,21 @@ async function main(): Promise<void> {
   });
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
 
-  client.once("ready", async () => {
+  client.once("clientReady", async () => {
     console.log(`Delta Core is online as ${client.user?.tag ?? "unknown-user"}.`);
     console.log("Supabase client initialized and ready for feature modules.");
 
     for (const [guildId, commands] of commandPayloads) {
-      await rest.put(Routes.applicationGuildCommands(config.discordClientId, guildId), {
-        body: commands
-      });
+      try {
+        await rest.put(Routes.applicationGuildCommands(config.discordClientId, guildId), {
+          body: commands
+        });
 
-      console.log(`Registered ${commands.length} command(s) for guild ${guildId}.`);
+        console.log(`Registered ${commands.length} command(s) for guild ${guildId}.`);
+      } catch (error) {
+        console.error(`Failed to register commands for guild ${guildId}.`);
+        console.error(error);
+      }
     }
   });
 
