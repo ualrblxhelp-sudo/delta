@@ -291,7 +291,7 @@ async function handleInstructorSessionCreate(
     "### <:DLplane:1531850073841864735> A Training Session has been Scheduled",
     `> -# New Training Session - ${departmentValue}`,
     "-# _ _",
-    "<:whitedot:1492002923033657405>Hello! If you are reading this, a training session has been scheduled. Please schedule yourself and allocate time accordingly for attendance. Thank you for your cooperation.",
+    "<:whitedot:1492002923033657405>Hello! If you are reading this, a training session has been scheduled. Please schedule yourself and allocate time accordingly for attendance. If you are able to attend, react with <:DLacademy11:1532393138566725773>, and if you cannot attend, react with <:DLacademy18:1532393120841334894>.Thank you for your cooperation.",
     "-# _ _",
     "### <:DLacademy19:1532393117041561751>Session Information ",
     `-# — ${timestamp}`,
