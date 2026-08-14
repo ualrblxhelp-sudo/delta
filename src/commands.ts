@@ -135,17 +135,6 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .setDescription("Instructor management tools.")
         .addSubcommand((subcommand) =>
           subcommand
-            .setName("lookup")
-            .setDescription("Look up an instructor by Discord ID.")
-            .addStringOption((option) =>
-              option
-                .setName("discord_id")
-                .setDescription("The instructor's Discord user ID.")
-                .setRequired(true)
-            )
-        )
-        .addSubcommand((subcommand) =>
-          subcommand
             .setName("attendance")
             .setDescription("Store attendance for a completed training session.")
             .addUserOption((option) =>
@@ -236,11 +225,6 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
                 .setDescription("The stage label for this training session.")
                 .setRequired(true)
             )
-        )
-        .addSubcommand((subcommand) =>
-          subcommand
-            .setName("trainingpanel")
-            .setDescription("Open the instructor training panel.")
         )
         .toJSON()
     ];
