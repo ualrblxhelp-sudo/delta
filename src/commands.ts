@@ -16,10 +16,27 @@ const academyDepartmentChoices = [
 
 const academyLocationChoices = ["HQ", "GFK", "LGB", "EWR", "SLC", "MTJ"] as const;
 
+const academyDepartmentRouting = {
+  "Ground Operations": {
+    roleId: "965637523240005673",
+    announcementChannelId: "965460985118871593"
+  },
+  "In-Flight & Customer Services": {
+    roleId: "965635494601965648",
+    announcementChannelId: "965460648664391741"
+  },
+  "Flight Operations": {
+    roleId: "965635417938481282",
+    announcementChannelId: "1379940357415899266"
+  }
+} as const;
+
 type CommandRoute = {
   commandName: string;
   subcommandName?: string;
 };
+
+type AcademyDepartment = keyof typeof academyDepartmentRouting;
 
 function createPlaceholderEmbed(
   guildConfig: DeltaGuildConfig,
@@ -162,6 +179,12 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
             })
             .addStringOption((option) =>
               option
+                .setName("timestamp")
+                .setDescription("The session timestamp text to include in the announcement.")
+                .setRequired(true)
+            )
+            .addStringOption((option) =>
+              option
                 .setName("stage")
                 .setDescription("The stage label for this training session.")
                 .setRequired(true)
@@ -217,6 +240,100 @@ function isInstructorRestrictedRoute(route: CommandRoute): boolean {
   return route.commandName === "instructor" && route.subcommandName !== undefined;
 }
 
+function isAcademyDepartment(value: string): value is AcademyDepartment {
+  return value in academyDepartmentRouting;
+}
+
+async function handleInstructorSessionCreate(
+  interaction: ChatInputCommandInteraction,
+  guildConfig: DeltaGuildConfig
+): Promise<void> {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command must be used from inside Delta Flight Academy."
+    });
+    return;
+  }
+
+  const hostUser = interaction.options.getUser("host_instructor", true);
+  const location = interaction.options.getString("location", true);
+  const departmentValue = interaction.options.getString("department", true);
+  const timestamp = interaction.options.getString("timestamp", true);
+  const stage = interaction.options.getString("stage", true);
+
+  if (!isAcademyDepartment(departmentValue)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "That department is not configured for session creation."
+    });
+    return;
+  }
+
+  const departmentRoute = academyDepartmentRouting[departmentValue];
+  const announcementChannel = await interaction.guild.channels.fetch(
+    departmentRoute.announcementChannelId
+  );
+
+  if (!announcementChannel?.isTextBased() || !("send" in announcementChannel)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "The announcement channel for that department is unavailable right now."
+    });
+    return;
+  }
+
+  const hostMember = await interaction.guild.members.fetch(hostUser.id).catch(() => null);
+  const hostDisplayName =
+    hostMember?.displayName ?? hostUser.displayName ?? hostUser.username;
+
+  const finalAnnouncement = [
+    "### <:DLplane:1531850073841864735> A Training Session has been Scheduled",
+    `> -# New Training Session - ${departmentValue}`,
+    "-# _ _",
+    "<:whitedot:1492002923033657405>Hello! If you are reading this, a training session has been scheduled. Please schedule yourself and allocate time accordingly for attendance. Thank you for your cooperation.",
+    "-# _ _",
+    "### <:DLacademy19:1532393117041561751>Session Information ",
+    `-# — ${timestamp}`,
+    `-# — Stage ${stage}`,
+    `-# — Hosted by **@**${hostDisplayName}`
+  ].join("\n");
+
+  const ghostPingAnnouncement = `<@&${departmentRoute.roleId}>\n${finalAnnouncement}`;
+
+  const message = await announcementChannel.send({
+    content: ghostPingAnnouncement,
+    allowedMentions: { roles: [departmentRoute.roleId] }
+  });
+
+  await message.edit({
+    content: finalAnnouncement,
+    allowedMentions: { parse: [] }
+  });
+
+  await message.react("<:DLacademy11:1532393138566725773>");
+  await message.react("<:DLacademy18:1532393120841334894>");
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setTitle("Training Session Created")
+        .setDescription("The training session has been announced and the department was ghost pinged.")
+        .addFields(
+          { name: "Department", value: departmentValue, inline: true },
+          { name: "Location", value: location, inline: true },
+          { name: "Stage", value: stage, inline: true },
+          { name: "Timestamp", value: timestamp, inline: false },
+          { name: "Host", value: hostDisplayName, inline: true },
+          { name: "Channel", value: `<#${departmentRoute.announcementChannelId}>`, inline: true }
+        )
+        .setFooter({ text: guildConfig.name })
+    ]
+  });
+}
+
 export async function handleChatInputCommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
@@ -257,6 +374,11 @@ export async function handleChatInputCommand(
           .setFooter({ text: guildConfig.name })
       ]
     });
+    return;
+  }
+
+  if (route.commandName === "instructor" && route.subcommandName === "sessioncreate") {
+    await handleInstructorSessionCreate(interaction, guildConfig);
     return;
   }
 
