@@ -1,14 +1,19 @@
 import { Client, GatewayIntentBits, REST, Routes } from "discord.js";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { buildGuildCommandPayloads, handleChatInputCommand } from "./commands.js";
 import { loadConfig } from "./config.js";
+
+export type DeltaCoreContext = {
+  supabase: SupabaseClient;
+};
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const commandPayloads = buildGuildCommandPayloads();
 
   const supabase = createClient(config.supabaseUrl, config.supabaseSecretKey);
+  const context: DeltaCoreContext = { supabase };
   const client = new Client({
     intents: [GatewayIntentBits.Guilds]
   });
@@ -33,7 +38,7 @@ async function main(): Promise<void> {
     }
 
     try {
-      await handleChatInputCommand(interaction);
+      await handleChatInputCommand(interaction, context);
     } catch (error) {
       console.error("Delta Core failed to handle an interaction.");
       console.error(error);

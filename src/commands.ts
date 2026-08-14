@@ -2,10 +2,12 @@ import {
   ChatInputCommandInteraction,
   EmbedBuilder,
   GuildMember,
+  type MessageCreateOptions,
   RESTPostAPIApplicationCommandsJSONBody,
   SlashCommandBuilder
 } from "discord.js";
 
+import type { DeltaCoreContext } from "./index.js";
 import { DELTA_GUILDS, DELTA_GUILD_MAP, type DeltaGuildConfig } from "./server-config.js";
 
 const academyDepartmentChoices = [
@@ -37,6 +39,20 @@ type CommandRoute = {
 };
 
 type AcademyDepartment = keyof typeof academyDepartmentRouting;
+type AcademySessionRow = {
+  id: string;
+  guild_id: string;
+  department: AcademyDepartment;
+  location: string;
+  stage: string;
+  timestamp_text: string;
+  host_discord_user_id: string;
+  host_display_name: string;
+  announcement_channel_id: string;
+  announcement_message_id: string;
+  created_by_discord_user_id: string;
+  created_at: string;
+};
 
 function createPlaceholderEmbed(
   guildConfig: DeltaGuildConfig,
@@ -244,9 +260,138 @@ function isAcademyDepartment(value: string): value is AcademyDepartment {
   return value in academyDepartmentRouting;
 }
 
+function buildAcademySessionsDescription(lines: string[]): string {
+  const sessionLines =
+    lines.length > 0
+      ? lines
+      : ["-# — No training sessions are currently available for your department roles."];
+
+  return [
+    "### <:DLplane:1531850073841864735> Training Session Schedule",
+    "> -# All Scheduled Training Sessions **—** For Your Department",
+    "-# _ _",
+    "<:whitedot:1492002923033657405>**Below** is a list of all training sessions available to you, listing the date, time, and if applicable, stage for your training. Please ensure to attend the necessary sessions required for graduation. If you see an active session, check your **#**notices page to view information regarding a session.",
+    "-# _ _",
+    "### <:DLacademy19:1532393117041561751> Session Calendar ",
+    ...sessionLines
+  ].join("\n");
+}
+
+async function deleteAcademySessionByMessageId(
+  context: DeltaCoreContext,
+  announcementMessageId: string
+): Promise<void> {
+  const { error } = await context.supabase
+    .from("academy_sessions")
+    .delete()
+    .eq("announcement_message_id", announcementMessageId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function getCurrentHostDisplayName(
+  interaction: ChatInputCommandInteraction,
+  session: AcademySessionRow
+): Promise<string> {
+  if (!interaction.inCachedGuild()) {
+    return session.host_display_name;
+  }
+
+  const member = await interaction.guild.members
+    .fetch(session.host_discord_user_id)
+    .catch(() => null);
+
+  return member?.displayName ?? session.host_display_name;
+}
+
+async function handleAcademySessions(
+  interaction: ChatInputCommandInteraction,
+  guildConfig: DeltaGuildConfig,
+  context: DeltaCoreContext
+): Promise<void> {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command must be used from inside Delta Flight Academy."
+    });
+    return;
+  }
+
+  const member = interaction.member as GuildMember;
+  const visibleDepartments = Object.entries(academyDepartmentRouting)
+    .filter(([, route]) => member.roles.cache.has(route.roleId))
+    .map(([department]) => department as AcademyDepartment);
+
+  if (visibleDepartments.length === 0) {
+    await interaction.reply({
+      ephemeral: true,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(guildConfig.embedColor)
+          .setDescription(buildAcademySessionsDescription([]))
+          .setFooter({ text: `${guildConfig.name} • Training Information` })
+      ]
+    });
+    return;
+  }
+
+  const { data, error } = await context.supabase
+    .from("academy_sessions")
+    .select("*")
+    .eq("guild_id", guildConfig.id)
+    .in("department", visibleDepartments)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  const sessions = (data ?? []) as AcademySessionRow[];
+  const sessionLines: string[] = [];
+
+  for (const session of sessions) {
+    const channel = await interaction.guild.channels
+      .fetch(session.announcement_channel_id)
+      .catch(() => null);
+
+    if (!channel?.isTextBased() || !("messages" in channel)) {
+      await deleteAcademySessionByMessageId(context, session.announcement_message_id);
+      continue;
+    }
+
+    const message = await channel.messages
+      .fetch(session.announcement_message_id)
+      .catch(() => null);
+
+    if (!message) {
+      await deleteAcademySessionByMessageId(context, session.announcement_message_id);
+      continue;
+    }
+
+    const hostDisplayName = await getCurrentHostDisplayName(interaction, session);
+
+    sessionLines.push(
+      `-# — **@**${hostDisplayName} | ${session.timestamp_text} | Stage ${session.stage}`
+    );
+  }
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setDescription(buildAcademySessionsDescription(sessionLines))
+        .setFooter({ text: `${guildConfig.name} • Training Information` })
+    ]
+  });
+}
+
 async function handleInstructorSessionCreate(
   interaction: ChatInputCommandInteraction,
-  guildConfig: DeltaGuildConfig
+  guildConfig: DeltaGuildConfig,
+  context: DeltaCoreContext
 ): Promise<void> {
   if (!interaction.inCachedGuild()) {
     await interaction.reply({
@@ -301,10 +446,12 @@ async function handleInstructorSessionCreate(
 
   const ghostPingAnnouncement = `<@&${departmentRoute.roleId}>\n${finalAnnouncement}`;
 
-  const message = await announcementChannel.send({
+  const messagePayload: MessageCreateOptions = {
     content: ghostPingAnnouncement,
     allowedMentions: { roles: [departmentRoute.roleId] }
-  });
+  };
+
+  const message = await announcementChannel.send(messagePayload);
 
   await message.edit({
     content: finalAnnouncement,
@@ -313,6 +460,24 @@ async function handleInstructorSessionCreate(
 
   await message.react("<:DLacademy11:1532393138566725773>");
   await message.react("<:DLacademy18:1532393120841334894>");
+
+  const { error } = await context.supabase.from("academy_sessions").insert({
+    guild_id: guildConfig.id,
+    department: departmentValue,
+    location,
+    stage,
+    timestamp_text: timestamp,
+    host_discord_user_id: hostUser.id,
+    host_display_name: hostDisplayName,
+    announcement_channel_id: departmentRoute.announcementChannelId,
+    announcement_message_id: message.id,
+    created_by_discord_user_id: interaction.user.id
+  });
+
+  if (error) {
+    await message.delete().catch(() => null);
+    throw error;
+  }
 
   await interaction.reply({
     ephemeral: true,
@@ -335,7 +500,8 @@ async function handleInstructorSessionCreate(
 }
 
 export async function handleChatInputCommand(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
+  context: DeltaCoreContext
 ): Promise<void> {
   const guildId = interaction.guildId;
 
@@ -359,6 +525,11 @@ export async function handleChatInputCommand(
 
   const route = getCommandRoute(interaction);
 
+  if (route.commandName === "academy" && route.subcommandName === "sessions") {
+    await handleAcademySessions(interaction, guildConfig, context);
+    return;
+  }
+
   if (
     isInstructorRestrictedRoute(route) &&
     guildConfig.minimumInstructorRoleId &&
@@ -378,7 +549,7 @@ export async function handleChatInputCommand(
   }
 
   if (route.commandName === "instructor" && route.subcommandName === "sessioncreate") {
-    await handleInstructorSessionCreate(interaction, guildConfig);
+    await handleInstructorSessionCreate(interaction, guildConfig, context);
     return;
   }
 
