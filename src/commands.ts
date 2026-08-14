@@ -127,7 +127,7 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("sessions")
-            .setDescription("Placeholder command for academy sessions.")
+            .setDescription("View all scheduled training sessions for your department roles.")
         )
         .toJSON(),
       new SlashCommandBuilder()
@@ -164,7 +164,7 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("log")
-            .setDescription("Create a placeholder instructor log entry.")
+            .setDescription("Store a trainee graduation log entry.")
             .addUserOption((option) =>
               option
                 .setName("user")
@@ -193,7 +193,7 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("sessioncreate")
-            .setDescription("Create a placeholder training session.")
+            .setDescription("Create and announce a training session.")
             .addUserOption((option) =>
               option
                 .setName("host_instructor")
@@ -240,7 +240,7 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("trainingpanel")
-            .setDescription("Open the placeholder training panel.")
+            .setDescription("Open the instructor training panel.")
         )
         .toJSON()
     ];
