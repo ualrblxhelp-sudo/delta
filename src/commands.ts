@@ -208,53 +208,53 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
     return [
       new SlashCommandBuilder()
         .setName("academy")
-        .setDescription("Delta Flight Academy tools.")
+        .setDescription("Access trainee schedules and academy session information.")
         .addSubcommand((subcommand) =>
           subcommand
             .setName("sessions")
-            .setDescription("View all scheduled training sessions for your department roles.")
+            .setDescription("View every scheduled training session available to your department roles.")
         )
         .toJSON(),
       new SlashCommandBuilder()
         .setName("instructor")
-        .setDescription("Instructor management tools.")
+        .setDescription("Manage academy sessions, attendance, trainees, and training logs.")
         .addSubcommand((subcommand) =>
           subcommand
             .setName("attendance")
-            .setDescription("Store attendance for a completed training session.")
+            .setDescription("Log completed training attendance for one or more trainees.")
             .addUserOption((option) =>
               option
                 .setName("instructor")
-                .setDescription("The instructor responsible for the session.")
+                .setDescription("Select the instructor who hosted or trained the session.")
                 .setRequired(true)
             )
             .addStringOption((option) =>
               option
                 .setName("trainees")
-                .setDescription("Mention or paste the trainee IDs separated by spaces or commas.")
+                .setDescription("Mention or paste every trainee ID, separated by spaces or commas.")
                 .setRequired(true)
             )
         )
         .addSubcommand((subcommand) =>
           subcommand
             .setName("log")
-            .setDescription("Store a trainee graduation log entry.")
+            .setDescription("Store a graduation log for a trainee who completed training.")
             .addUserOption((option) =>
               option
                 .setName("user")
-                .setDescription("The instructor responsible for the trainee's graduation.")
+                .setDescription("Select the instructor responsible for the trainee's graduation.")
                 .setRequired(true)
             )
             .addUserOption((option) =>
               option
                 .setName("trainee")
-                .setDescription("The trainee who has graduated.")
+                .setDescription("Select the trainee who has successfully graduated.")
                 .setRequired(true)
             )
             .addStringOption((option) => {
               option
                 .setName("department")
-                .setDescription("The department for the log.")
+                .setDescription("Choose the department the trainee graduated into.")
                 .setRequired(true);
 
               for (const choice of academyDepartmentChoices) {
@@ -267,17 +267,17 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("sessioncreate")
-            .setDescription("Create and announce a training session.")
+            .setDescription("Create, announce, and save a new academy training session.")
             .addUserOption((option) =>
               option
                 .setName("host_instructor")
-                .setDescription("The host instructor for the session.")
+                .setDescription("Select the instructor who will host the training session.")
                 .setRequired(true)
             )
             .addStringOption((option) => {
               option
                 .setName("location")
-                .setDescription("The academy session location.")
+                .setDescription("Choose the airport or academy location for the session.")
                 .setRequired(true);
 
               for (const choice of academyLocationChoices) {
@@ -289,7 +289,7 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
             .addStringOption((option) => {
               option
                 .setName("department")
-                .setDescription("The department running the session.")
+                .setDescription("Choose which academy department this session is for.")
                 .setRequired(true);
 
               for (const choice of academyDepartmentChoices) {
@@ -301,20 +301,20 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
             .addStringOption((option) =>
               option
                 .setName("timestamp")
-                .setDescription("The session timestamp text to include in the announcement.")
+                .setDescription("Enter the timestamp text that should appear in the announcement.")
                 .setRequired(true)
             )
             .addStringOption((option) =>
               option
                 .setName("stage")
-                .setDescription("The stage label for this training session.")
+                .setDescription("Enter the stage number or label for this training session.")
                 .setRequired(true)
             )
         )
         .addSubcommand((subcommand) =>
           subcommand
             .setName("trainingpanel")
-            .setDescription("Open the academy training management panel.")
+            .setDescription("Open the academy control panel for trainees and scheduled sessions.")
         )
         .toJSON()
     ];
