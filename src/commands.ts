@@ -34,6 +34,7 @@ const academyDepartmentRouting = {
 } as const;
 
 const academyGraduationLogThreadId = "1537637855742926918";
+const academyAttendanceLogThreadId = "1537637786817921104";
 
 type CommandRoute = {
   commandName: string;
@@ -62,6 +63,17 @@ type AcademyGraduationLogInsert = {
   instructor_discord_user_id: string;
   trainee_discord_user_id: string;
   trainee_display_name: string;
+  log_thread_id: string;
+  log_message_id: string;
+  created_by_discord_user_id: string;
+};
+
+type AcademyAttendanceLogInsert = {
+  guild_id: string;
+  instructor_discord_user_id: string;
+  instructor_display_name: string;
+  trainee_discord_user_ids: string[];
+  trainee_display_names: string[];
   log_thread_id: string;
   log_message_id: string;
   created_by_discord_user_id: string;
@@ -135,17 +147,17 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
         .addSubcommand((subcommand) =>
           subcommand
             .setName("attendance")
-            .setDescription("Record placeholder attendance details.")
-            .addUserOption((option) =>
-              option
-                .setName("user")
-                .setDescription("The user being marked for attendance.")
-                .setRequired(true)
-            )
+            .setDescription("Store attendance for a completed training session.")
             .addUserOption((option) =>
               option
                 .setName("instructor")
                 .setDescription("The instructor responsible for the session.")
+                .setRequired(true)
+            )
+            .addStringOption((option) =>
+              option
+                .setName("trainees")
+                .setDescription("Mention or paste the trainee IDs separated by spaces or commas.")
                 .setRequired(true)
             )
         )
@@ -294,6 +306,11 @@ function buildAcademySessionsDescription(lines: string[]): string {
     "### <:DLacademy19:1532393117041561751> Session Calendar ",
     ...sessionLines
   ].join("\n");
+}
+
+function parseDiscordSnowflakes(value: string): string[] {
+  const matches = value.match(/\d{17,20}/g) ?? [];
+  return Array.from(new Set(matches));
 }
 
 async function deleteAcademySessionByMessageId(
@@ -502,6 +519,120 @@ async function handleInstructorLog(
   });
 }
 
+async function handleInstructorAttendance(
+  interaction: ChatInputCommandInteraction,
+  guildConfig: DeltaGuildConfig,
+  context: DeltaCoreContext
+): Promise<void> {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command must be used from inside Delta Flight Academy."
+    });
+    return;
+  }
+
+  const instructorUser = interaction.options.getUser("instructor", true);
+  const traineesValue = interaction.options.getString("trainees", true);
+  const traineeIds = parseDiscordSnowflakes(traineesValue);
+
+  if (traineeIds.length === 0) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Add at least one trainee mention or Discord ID in the trainees field."
+    });
+    return;
+  }
+
+  const instructorMember = await interaction.guild.members
+    .fetch(instructorUser.id)
+    .catch(() => null);
+  const instructorDisplayName =
+    instructorMember?.displayName ?? instructorUser.displayName ?? instructorUser.username;
+
+  const traineeMembers = await Promise.all(
+    traineeIds.map((traineeId) => interaction.guild.members.fetch(traineeId).catch(() => null))
+  );
+
+  const missingTrainees = traineeIds.filter((_, index) => traineeMembers[index] === null);
+
+  if (missingTrainees.length > 0) {
+    await interaction.reply({
+      ephemeral: true,
+      content:
+        "I couldn't find every trainee in Delta Flight Academy. Double-check the mentions or IDs and try again."
+    });
+    return;
+  }
+
+  const traineeDisplayNames = traineeMembers.map((member) => member!.displayName);
+  const attendanceThread = await interaction.guild.channels.fetch(academyAttendanceLogThreadId);
+
+  if (!attendanceThread?.isTextBased() || !("send" in attendanceThread)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "The attendance log thread is unavailable right now."
+    });
+    return;
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const traineeLines = traineeDisplayNames.map((displayName) => `-# — **@**${displayName}`);
+  const description = [
+    "### <:DLplane:1531850073841864735> Training Attendance",
+    "> -# Attendance Storage ",
+    "-# _ _",
+    `<:whitedot:1492002923033657405>The trainees below, trained by **@**${instructorDisplayName}, have gone through a **singular** training session, done at <t:${timestamp}:F>.`,
+    "-# _ _",
+    ...traineeLines
+  ].join("\n");
+
+  const message = await attendanceThread.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setDescription(description)
+        .setFooter({ text: `${guildConfig.name} • Training Information` })
+    ]
+  });
+
+  const insertPayload: AcademyAttendanceLogInsert = {
+    guild_id: guildConfig.id,
+    instructor_discord_user_id: instructorUser.id,
+    instructor_display_name: instructorDisplayName,
+    trainee_discord_user_ids: traineeIds,
+    trainee_display_names: traineeDisplayNames,
+    log_thread_id: academyAttendanceLogThreadId,
+    log_message_id: message.id,
+    created_by_discord_user_id: interaction.user.id
+  };
+
+  const { error } = await context.supabase
+    .from("academy_attendance_logs")
+    .insert(insertPayload);
+
+  if (error) {
+    await message.delete().catch(() => null);
+    throw error;
+  }
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setTitle("Training Attendance Stored")
+        .setDescription("The attendance log has been posted and saved.")
+        .addFields(
+          { name: "Instructor", value: instructorDisplayName, inline: true },
+          { name: "Trainees", value: traineeDisplayNames.join(", "), inline: false },
+          { name: "Logged At", value: `<t:${timestamp}:F>`, inline: false }
+        )
+        .setFooter({ text: guildConfig.name })
+    ]
+  });
+}
+
 async function handleInstructorSessionCreate(
   interaction: ChatInputCommandInteraction,
   guildConfig: DeltaGuildConfig,
@@ -664,6 +795,11 @@ export async function handleChatInputCommand(
 
   if (route.commandName === "instructor" && route.subcommandName === "sessioncreate") {
     await handleInstructorSessionCreate(interaction, guildConfig, context);
+    return;
+  }
+
+  if (route.commandName === "instructor" && route.subcommandName === "attendance") {
+    await handleInstructorAttendance(interaction, guildConfig, context);
     return;
   }
 
