@@ -1,7 +1,12 @@
-import { Client, GatewayIntentBits, REST, Routes } from "discord.js";
+import { Client, GatewayIntentBits, MessageFlags, REST, Routes } from "discord.js";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-import { buildGuildCommandPayloads, handleChatInputCommand } from "./commands.js";
+import {
+  buildGuildCommandPayloads,
+  handleChatInputCommand,
+  handleMessageComponentInteraction,
+  handleModalSubmitInteraction
+} from "./commands.js";
 import { loadConfig } from "./config.js";
 
 export type DeltaCoreContext = {
@@ -15,7 +20,7 @@ async function main(): Promise<void> {
   const supabase = createClient(config.supabaseUrl, config.supabaseSecretKey);
   const context: DeltaCoreContext = { supabase };
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
   });
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
 
@@ -38,15 +43,27 @@ async function main(): Promise<void> {
   });
 
   client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) {
-      return;
-    }
-
     try {
-      await handleChatInputCommand(interaction, context);
+      if (interaction.isChatInputCommand()) {
+        await handleChatInputCommand(interaction, context);
+        return;
+      }
+
+      if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        await handleMessageComponentInteraction(interaction, context);
+        return;
+      }
+
+      if (interaction.isModalSubmit()) {
+        await handleModalSubmitInteraction(interaction, context);
+      }
     } catch (error) {
       console.error("Delta Core failed to handle an interaction.");
       console.error(error);
+
+      if (!interaction.isRepliable()) {
+        return;
+      }
 
       const fallbackMessage = {
         ephemeral: true,
