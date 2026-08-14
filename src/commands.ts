@@ -33,6 +33,8 @@ const academyDepartmentRouting = {
   }
 } as const;
 
+const academyGraduationLogThreadId = "1537637855742926918";
+
 type CommandRoute = {
   commandName: string;
   subcommandName?: string;
@@ -52,6 +54,17 @@ type AcademySessionRow = {
   announcement_message_id: string;
   created_by_discord_user_id: string;
   created_at: string;
+};
+
+type AcademyGraduationLogInsert = {
+  guild_id: string;
+  department: AcademyDepartment;
+  instructor_discord_user_id: string;
+  trainee_discord_user_id: string;
+  trainee_display_name: string;
+  log_thread_id: string;
+  log_message_id: string;
+  created_by_discord_user_id: string;
 };
 
 function createPlaceholderEmbed(
@@ -143,7 +156,13 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
             .addUserOption((option) =>
               option
                 .setName("user")
-                .setDescription("The instructor being logged.")
+                .setDescription("The instructor responsible for the trainee's graduation.")
+                .setRequired(true)
+            )
+            .addUserOption((option) =>
+              option
+                .setName("trainee")
+                .setDescription("The trainee who has graduated.")
                 .setRequired(true)
             )
             .addStringOption((option) => {
@@ -388,6 +407,101 @@ async function handleAcademySessions(
   });
 }
 
+async function handleInstructorLog(
+  interaction: ChatInputCommandInteraction,
+  guildConfig: DeltaGuildConfig,
+  context: DeltaCoreContext
+): Promise<void> {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This command must be used from inside Delta Flight Academy."
+    });
+    return;
+  }
+
+  const instructorUser = interaction.options.getUser("user", true);
+  const traineeUser = interaction.options.getUser("trainee", true);
+  const departmentValue = interaction.options.getString("department", true);
+
+  if (!isAcademyDepartment(departmentValue)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "That department is not configured for instructor logs."
+    });
+    return;
+  }
+
+  const logThread = await interaction.guild.channels.fetch(academyGraduationLogThreadId);
+
+  if (!logThread?.isTextBased() || !("send" in logThread)) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "The graduation log thread is unavailable right now."
+    });
+    return;
+  }
+
+  const traineeMember = await interaction.guild.members.fetch(traineeUser.id).catch(() => null);
+  const traineeDisplayName =
+    traineeMember?.displayName ?? traineeUser.displayName ?? traineeUser.username;
+  const timestamp = Math.floor(Date.now() / 1000);
+
+  const description = [
+    "### <:DLplane:1531850073841864735> Training Log",
+    "> -# Graduation Storage ",
+    "-# _ _",
+    "<:whitedot:1492002923033657405>This trainee has officially graduated from the Delta Training Curriculum, officially entering Delta Air Lines' employee system.",
+    "-# _ _",
+    `-# — **@**${traineeDisplayName} | <t:${timestamp}:F>`
+  ].join("\n");
+
+  const message = await logThread.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setDescription(description)
+        .setFooter({ text: `${guildConfig.name} • Training Information` })
+    ]
+  });
+
+  const insertPayload: AcademyGraduationLogInsert = {
+    guild_id: guildConfig.id,
+    department: departmentValue,
+    instructor_discord_user_id: instructorUser.id,
+    trainee_discord_user_id: traineeUser.id,
+    trainee_display_name: traineeDisplayName,
+    log_thread_id: academyGraduationLogThreadId,
+    log_message_id: message.id,
+    created_by_discord_user_id: interaction.user.id
+  };
+
+  const { error } = await context.supabase
+    .from("academy_graduation_logs")
+    .insert(insertPayload);
+
+  if (error) {
+    await message.delete().catch(() => null);
+    throw error;
+  }
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setTitle("Training Log Stored")
+        .setDescription("The trainee graduation log has been posted and saved.")
+        .addFields(
+          { name: "Department", value: departmentValue, inline: true },
+          { name: "Instructor", value: instructorUser.displayName, inline: true },
+          { name: "Trainee", value: traineeDisplayName, inline: true }
+        )
+        .setFooter({ text: guildConfig.name })
+    ]
+  });
+}
+
 async function handleInstructorSessionCreate(
   interaction: ChatInputCommandInteraction,
   guildConfig: DeltaGuildConfig,
@@ -550,6 +664,11 @@ export async function handleChatInputCommand(
 
   if (route.commandName === "instructor" && route.subcommandName === "sessioncreate") {
     await handleInstructorSessionCreate(interaction, guildConfig, context);
+    return;
+  }
+
+  if (route.commandName === "instructor" && route.subcommandName === "log") {
+    await handleInstructorLog(interaction, guildConfig, context);
     return;
   }
 
