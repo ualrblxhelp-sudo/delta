@@ -550,6 +550,7 @@ async function updateStaffBriefingMessage(
         .setDescription(buildStaffFlightBriefingDescription(flight, allocations))
         .setFooter({ text: `${DELTA_GUILDS.staff.name} • Dispatcher Services` })
     ],
+    components: [buildStaffFlightButtons(flight.id)],
     allowedMentions: { parse: [] }
   });
 }
@@ -767,8 +768,7 @@ async function finalizeStaffFlightCreation(
     .setFooter({ text: `${guildConfig.name} • Operations Scheduling` });
 
   const announcementMessage = await announcementChannel.send({
-    embeds: [announcementEmbed],
-    components: [buildStaffFlightButtons("pending")]
+    embeds: [announcementEmbed]
   });
 
   const briefingThread = await announcementMessage.startThread({
@@ -804,6 +804,7 @@ async function finalizeStaffFlightCreation(
         .setDescription(buildStaffFlightBriefingDescription(temporaryFlight, []))
         .setFooter({ text: `${guildConfig.name} • Dispatcher Services` })
     ],
+    components: [buildStaffFlightButtons("pending")],
     allowedMentions: { parse: [] }
   });
 
@@ -828,8 +829,7 @@ async function finalizeStaffFlightCreation(
     });
 
     await announcementMessage.edit({
-      embeds: [announcementEmbed],
-      components: [buildStaffFlightButtons(flight.id)]
+      embeds: [announcementEmbed]
     });
 
     await updateStaffBriefingMessage(interaction.guild, context, flight);
