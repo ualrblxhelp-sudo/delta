@@ -579,6 +579,14 @@ async function handleStaffOpsFlightCreate(
     return;
   }
 
+  if (!memberHasExactRole(interaction, deltaStaffOpsRoleId)) {
+    await interaction.reply({
+      flags: MessageFlags.Ephemeral,
+      content: "You do not have the required operations role to use this command."
+    });
+    return;
+  }
+
   staffFlightDrafts.delete(interaction.user.id);
 
   await interaction.reply({
@@ -591,6 +599,41 @@ async function handleStaffOpsFlightCreate(
         .setFooter({ text: guildConfig.name })
     ],
     components: [buildStaffFlightTypeSelector(interaction.user.id)]
+  });
+}
+
+async function handleStaffOpsFlightPanel(
+  interaction: ChatInputCommandInteraction,
+  guildConfig: DeltaGuildConfig,
+  context: DeltaCoreContext
+): Promise<void> {
+  if (!interaction.inCachedGuild()) {
+    await interaction.reply({
+      flags: MessageFlags.Ephemeral,
+      content: "This command must be used from inside Delta Staff."
+    });
+    return;
+  }
+
+  if (!memberHasExactRole(interaction, deltaStaffOpsRoleId)) {
+    await interaction.reply({
+      flags: MessageFlags.Ephemeral,
+      content: "You do not have the required operations role to use this command."
+    });
+    return;
+  }
+
+  const payload = await buildStaffFlightPanelPayload(
+    context,
+    guildConfig,
+    interaction.guildId!,
+    interaction.user.id
+  );
+
+  await interaction.reply({
+    flags: MessageFlags.Ephemeral,
+    embeds: payload.embeds,
+    components: payload.components
   });
 }
 
@@ -1002,6 +1045,343 @@ async function assignStaffFlightRole(
     content: `You are now assigned as **${role.name}** for flight **${flight.flight_number}**.`,
     components: []
   });
+}
+
+async function fetchStaffFlightsByCreator(
+  context: DeltaCoreContext,
+  guildId: string,
+  creatorId: string
+): Promise<StaffFlightRow[]> {
+  const { data, error } = await context.supabase
+    .from("staff_flights")
+    .select("*")
+    .eq("guild_id", guildId)
+    .eq("created_by_discord_user_id", creatorId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []) as StaffFlightRow[];
+}
+
+async function updateStaffFlight(
+  context: DeltaCoreContext,
+  flightId: string,
+  payload: Partial<
+    Pick<
+      StaffFlightRow,
+      | "flight_type"
+      | "flight_number"
+      | "departure"
+      | "destination"
+      | "aircraft"
+      | "codeshares"
+      | "departure_gate"
+      | "arrival_gate"
+      | "briefing_timestamp_text"
+      | "check_in_timestamp_text"
+    >
+  >
+): Promise<StaffFlightRow> {
+  const { data, error } = await context.supabase
+    .from("staff_flights")
+    .update(payload)
+    .eq("id", flightId)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data as StaffFlightRow;
+}
+
+async function resetStaffFlightAllocations(
+  context: DeltaCoreContext,
+  flightId: string
+): Promise<void> {
+  const { error } = await context.supabase
+    .from("staff_flight_allocations")
+    .delete()
+    .eq("flight_id", flightId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function removeStaffFlightAllocation(
+  context: DeltaCoreContext,
+  flightId: string,
+  userId: string
+): Promise<void> {
+  await deleteStaffFlightAllocationForUser(context, flightId, userId);
+}
+
+async function deleteStaffFlight(
+  guild: Guild,
+  context: DeltaCoreContext,
+  flight: StaffFlightRow
+): Promise<void> {
+  const thread = await guild.channels.fetch(flight.briefing_thread_id).catch(() => null);
+
+  if (thread && "delete" in thread) {
+    await thread.delete().catch(() => null);
+  }
+
+  const announcementChannel = await guild.channels
+    .fetch(flight.announcement_channel_id)
+    .catch(() => null);
+
+  if (announcementChannel?.isTextBased() && "messages" in announcementChannel) {
+    const announcementMessage = await announcementChannel.messages
+      .fetch(flight.announcement_message_id)
+      .catch(() => null);
+
+    if (announcementMessage) {
+      await announcementMessage.delete().catch(() => null);
+    }
+  }
+
+  const { error } = await context.supabase.from("staff_flights").delete().eq("id", flight.id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function updateStaffAnnouncementMessage(
+  guild: Guild,
+  flight: StaffFlightRow
+): Promise<void> {
+  const announcementChannel = await guild.channels
+    .fetch(flight.announcement_channel_id)
+    .catch(() => null);
+
+  if (!announcementChannel?.isTextBased() || !("messages" in announcementChannel)) {
+    throw new Error("The staff flight announcement channel is unavailable.");
+  }
+
+  const announcementMessage = await announcementChannel.messages
+    .fetch(flight.announcement_message_id)
+    .catch(() => null);
+
+  if (!announcementMessage) {
+    throw new Error("The stored flight announcement message could not be found.");
+  }
+
+  const codeshares = flight.codeshares?.trim() ? flight.codeshares : "N/A";
+
+  await announcementMessage.edit({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(DELTA_GUILDS.staff.embedColor)
+        .setDescription(
+          buildStaffFlightScheduledDescription({
+            flightNumber: flight.flight_number,
+            departure: flight.departure,
+            destination: flight.destination,
+            aircraft: flight.aircraft,
+            codeshares,
+            departureGate: flight.departure_gate,
+            arrivalGate: flight.arrival_gate,
+            checkInTimestamp: flight.check_in_timestamp_text,
+            briefingTimestamp: flight.briefing_timestamp_text
+          })
+        )
+        .setFooter({ text: `${DELTA_GUILDS.staff.name} • Operations Scheduling` })
+    ]
+  });
+}
+
+function buildStaffFlightPanelDescription(
+  flight: StaffFlightRow,
+  allocations: StaffFlightAllocationRow[],
+  index: number,
+  total: number
+): string {
+  const codeshares = flight.codeshares?.trim() ? flight.codeshares : "N/A";
+  return [
+    "### <:DLstaff28:1532391927079768196> Flight Panel",
+    `> -# Flight ${index + 1} of ${total}`,
+    "-# _ _",
+    `-# — **Type**: ${flight.flight_type}`,
+    `-# — **Flight No**: ${flight.flight_number}`,
+    `-# — **Route**: ${flight.departure} - ${flight.destination}`,
+    `-# — **Aircraft**: ${flight.aircraft}`,
+    `-# — **Codeshares**: ${codeshares}`,
+    `-# — **Departure Gate**: ${flight.departure_gate}`,
+    `-# — **Arrival Gate**: ${flight.arrival_gate}`,
+    `-# — **Briefing**: ${flight.briefing_timestamp_text}`,
+    `-# — **Check-In**: ${flight.check_in_timestamp_text}`,
+    `-# — **Allocations**: ${allocations.length}`,
+    `-# — **Briefing Thread**: <#${flight.briefing_thread_id}>`
+  ].join("\n");
+}
+
+function buildStaffFlightPanelSelector(
+  ownerId: string,
+  flights: StaffFlightRow[],
+  selectedFlightId?: string
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(buildStaffFlightCustomId("panel-select", ownerId))
+      .setPlaceholder("Select one of your scheduled flights")
+      .addOptions(
+        flights.slice(0, 25).map((flight) => ({
+          label: `${flight.flight_number} | ${flight.departure}-${flight.destination}`,
+          value: flight.id,
+          description: `${flight.aircraft} | ${flight.check_in_timestamp_text}`.slice(0, 100),
+          default: flight.id === selectedFlightId
+        }))
+      )
+  );
+}
+
+function buildStaffFlightPanelComponents(
+  ownerId: string,
+  flights: StaffFlightRow[],
+  selectedFlightId?: string
+): Array<
+  | ActionRowBuilder<ButtonBuilder>
+  | ActionRowBuilder<StringSelectMenuBuilder>
+> {
+  const selectedId = selectedFlightId ?? flights[0]?.id ?? "none";
+  const hasFlights = flights.length > 0;
+
+  return [
+    buildStaffFlightPanelSelector(ownerId, flights, selectedFlightId),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-edit-type", ownerId, selectedId))
+        .setLabel("Edit Type")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-edit-basics", ownerId, selectedId))
+        .setLabel("Edit Basics")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-edit-times", ownerId, selectedId))
+        .setLabel("Edit Gates/Times")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-refresh", ownerId, selectedId))
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-cancel", ownerId, selectedId))
+        .setLabel("Cancel Flight")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights)
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-assign", ownerId, selectedId))
+        .setLabel("Assign Staff")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-remove", ownerId, selectedId))
+        .setLabel("Remove Allocation")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights),
+      new ButtonBuilder()
+        .setCustomId(buildStaffFlightCustomId("panel-reset", ownerId, selectedId))
+        .setLabel("Reset Allocations")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!hasFlights)
+    )
+  ];
+}
+
+async function buildStaffFlightPanelPayload(
+  context: DeltaCoreContext,
+  guildConfig: DeltaGuildConfig,
+  guildId: string,
+  ownerId: string,
+  selectedFlightId?: string
+): Promise<{
+  embeds: EmbedBuilder[];
+  components: Array<
+    | ActionRowBuilder<ButtonBuilder>
+    | ActionRowBuilder<StringSelectMenuBuilder>
+  >;
+}> {
+  const flights = await fetchStaffFlightsByCreator(context, guildId, ownerId);
+
+  if (flights.length === 0) {
+    return {
+      embeds: [
+        new EmbedBuilder()
+          .setColor(guildConfig.embedColor)
+          .setTitle("Flight Panel")
+          .setDescription("You have not created any staff flights yet.")
+          .setFooter({ text: guildConfig.name })
+      ],
+      components: []
+    };
+  }
+
+  const selectedFlight = flights.find((flight) => flight.id === selectedFlightId) ?? flights[0];
+  const allocations = await fetchStaffFlightAllocations(context, selectedFlight.id);
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(guildConfig.embedColor)
+        .setDescription(
+          buildStaffFlightPanelDescription(
+            selectedFlight,
+            allocations,
+            flights.findIndex((flight) => flight.id === selectedFlight.id),
+            flights.length
+          )
+        )
+        .setFooter({ text: `${guildConfig.name} • Operations Panel` })
+    ],
+    components: buildStaffFlightPanelComponents(ownerId, flights, selectedFlight.id)
+  };
+}
+
+async function refreshStaffFlightPanel(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+  context: DeltaCoreContext,
+  guildConfig: DeltaGuildConfig,
+  ownerId: string,
+  selectedFlightId?: string
+): Promise<void> {
+  const payload = await buildStaffFlightPanelPayload(
+    context,
+    guildConfig,
+    interaction.guildId!,
+    ownerId,
+    selectedFlightId
+  );
+
+  await interaction.update({
+    embeds: payload.embeds,
+    components: payload.components
+  });
+}
+
+function normalizeStaffFlightRoleInput(value: string): StaffFlightRoleKey | null {
+  const normalized = value.trim().toLowerCase();
+
+  for (const [key, role] of staffFlightRoleMap.entries()) {
+    if (key === normalized || role.name.toLowerCase() === normalized) {
+      return key;
+    }
+  }
+
+  return null;
 }
 
 function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBody[] {
@@ -2669,6 +3049,240 @@ export async function handleMessageComponentInteraction(
       return true;
     }
 
+    if (action === "panel-select" && interaction.isStringSelectMenu()) {
+      const ownerId = staffParts[2];
+
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Only the creator of this flight panel can use it."
+        });
+        return true;
+      }
+
+      await refreshStaffFlightPanel(
+        interaction,
+        context,
+        DELTA_GUILDS.staff,
+        ownerId,
+        interaction.values[0]
+      );
+      return true;
+    }
+
+    if (interaction.isButton() && staffParts[2] === interaction.user.id) {
+      const ownerId = staffParts[2];
+      const flightId = staffParts[3];
+
+      if (
+        action === "panel-refresh" ||
+        action === "panel-edit-type" ||
+        action === "panel-edit-basics" ||
+        action === "panel-edit-times" ||
+        action === "panel-assign" ||
+        action === "panel-remove" ||
+        action === "panel-reset" ||
+        action === "panel-cancel"
+      ) {
+        const flight = flightId && flightId !== "none"
+          ? await fetchStaffFlightById(context, flightId)
+          : null;
+
+        if (!flight) {
+          await interaction.reply({
+            flags: MessageFlags.Ephemeral,
+            content: "That flight is no longer available."
+          });
+          return true;
+        }
+
+        if (flight.created_by_discord_user_id !== ownerId) {
+          await interaction.reply({
+            flags: MessageFlags.Ephemeral,
+            content: "You can only manage flights that you created."
+          });
+          return true;
+        }
+      }
+
+      if (action === "panel-refresh") {
+        await refreshStaffFlightPanel(interaction, context, DELTA_GUILDS.staff, ownerId, flightId);
+        return true;
+      }
+
+      if (action === "panel-edit-type") {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Choose the updated flight type.",
+          components: [
+            new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+              new StringSelectMenuBuilder()
+                .setCustomId(buildStaffFlightCustomId("panel-type-select", ownerId, flightId))
+                .setPlaceholder("Select the new flight type")
+                .addOptions(
+                  { label: "Regular Flight", value: "regular" },
+                  { label: "Delta Premium Flight", value: "premium" },
+                  { label: "Test Flight", value: "test" },
+                  { label: "Private Flight", value: "private" }
+                )
+            )
+          ]
+        });
+        return true;
+      }
+
+      if (action === "panel-edit-basics") {
+        const flight = await fetchStaffFlightById(context, flightId);
+        if (!flight) {
+          await interaction.reply({ flags: MessageFlags.Ephemeral, content: "That flight is no longer available." });
+          return true;
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-edit-basics-modal", ownerId, flightId))
+          .setTitle("Edit Flight Basics");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("flight_number").setLabel("Flight Number").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.flight_number)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("departure").setLabel("Departure").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.departure)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("destination").setLabel("Destination").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.destination)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("aircraft").setLabel("Aircraft").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.aircraft)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("codeshares").setLabel("Codeshares").setStyle(TextInputStyle.Short).setRequired(false).setValue(flight.codeshares ?? "N/A")
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (action === "panel-edit-times") {
+        const flight = await fetchStaffFlightById(context, flightId);
+        if (!flight) {
+          await interaction.reply({ flags: MessageFlags.Ephemeral, content: "That flight is no longer available." });
+          return true;
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-edit-times-modal", ownerId, flightId))
+          .setTitle("Edit Gates & Times");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("departure_gate").setLabel("Departure Gate").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.departure_gate)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("arrival_gate").setLabel("Arrival Gate").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.arrival_gate)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("briefing_timestamp").setLabel("Briefing Timestamp").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.briefing_timestamp_text)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("check_in_timestamp").setLabel("Check-In Timestamp").setStyle(TextInputStyle.Short).setRequired(true).setValue(flight.check_in_timestamp_text)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (action === "panel-assign") {
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-assign-modal", ownerId, flightId))
+          .setTitle("Assign Staff");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("user").setLabel("User Mention or Discord ID").setStyle(TextInputStyle.Short).setRequired(true)
+          ),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("role").setLabel("Role Name or Key").setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (action === "panel-remove") {
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-remove-modal", ownerId, flightId))
+          .setTitle("Remove Allocation");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("user").setLabel("User Mention or Discord ID").setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (action === "panel-reset") {
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-reset-modal", ownerId, flightId))
+          .setTitle("Reset Allocations");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("confirm").setLabel("Type RESET to confirm").setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+
+      if (action === "panel-cancel") {
+        const modal = new ModalBuilder()
+          .setCustomId(buildStaffFlightCustomId("panel-cancel-modal", ownerId, flightId))
+          .setTitle("Cancel Flight");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(
+            new TextInputBuilder().setCustomId("confirm").setLabel("Type CANCEL to confirm").setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return true;
+      }
+    }
+
+    if (action === "panel-type-select" && interaction.isStringSelectMenu()) {
+      const ownerId = staffParts[2];
+      const flightId = staffParts[3];
+      const selectedType = interaction.values[0];
+
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Only the creator of this flight panel can use it."
+        });
+        return true;
+      }
+
+      if (!isStaffFlightType(selectedType)) {
+        await interaction.update({ content: "That flight type is not supported.", components: [] });
+        return true;
+      }
+
+      const flight = await updateStaffFlight(context, flightId, { flight_type: selectedType });
+      await updateStaffAnnouncementMessage(interaction.guild!, flight);
+      await updateStaffBriefingMessage(interaction.guild!, context, flight);
+      await interaction.update({ content: `Flight type updated to **${selectedType}**.`, components: [] });
+      return true;
+    }
+
     return false;
   }
 
@@ -2941,6 +3555,193 @@ export async function handleModalSubmitInteraction(
       return true;
     }
 
+    if (action === "panel-edit-basics-modal") {
+      const flightId = staffParts[3];
+      const updatedFlight = await updateStaffFlight(context, flightId, {
+        flight_number: interaction.fields.getTextInputValue("flight_number").trim(),
+        departure: interaction.fields.getTextInputValue("departure").trim(),
+        destination: interaction.fields.getTextInputValue("destination").trim(),
+        aircraft: interaction.fields.getTextInputValue("aircraft").trim(),
+        codeshares:
+          interaction.fields.getTextInputValue("codeshares").trim().toUpperCase() === "N/A"
+            ? null
+            : interaction.fields.getTextInputValue("codeshares").trim()
+      });
+
+      await updateStaffAnnouncementMessage(interaction.guild!, updatedFlight);
+      await updateStaffBriefingMessage(interaction.guild!, context, updatedFlight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `Flight **${updatedFlight.flight_number}** basics were updated successfully.`
+      });
+      return true;
+    }
+
+    if (action === "panel-edit-times-modal") {
+      const flightId = staffParts[3];
+      const updatedFlight = await updateStaffFlight(context, flightId, {
+        departure_gate: interaction.fields.getTextInputValue("departure_gate").trim(),
+        arrival_gate: interaction.fields.getTextInputValue("arrival_gate").trim(),
+        briefing_timestamp_text: interaction.fields.getTextInputValue("briefing_timestamp").trim(),
+        check_in_timestamp_text: interaction.fields.getTextInputValue("check_in_timestamp").trim()
+      });
+
+      await updateStaffAnnouncementMessage(interaction.guild!, updatedFlight);
+      await updateStaffBriefingMessage(interaction.guild!, context, updatedFlight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `Flight **${updatedFlight.flight_number}** gates and timestamps were updated successfully.`
+      });
+      return true;
+    }
+
+    if (action === "panel-assign-modal") {
+      const flightId = staffParts[3];
+      const userId = parseSingleDiscordSnowflake(interaction.fields.getTextInputValue("user"));
+      const roleKey = normalizeStaffFlightRoleInput(interaction.fields.getTextInputValue("role"));
+
+      if (!userId || !roleKey) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Provide a valid staff member ID and a valid role name or role key."
+        });
+        return true;
+      }
+
+      const flight = await fetchStaffFlightById(context, flightId);
+      const role = staffFlightRoleMap.get(roleKey);
+
+      if (!flight || !role) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "That flight or role could not be found."
+        });
+        return true;
+      }
+
+      const allocations = await fetchStaffFlightAllocations(context, flightId);
+      const roleCount = allocations.filter(
+        (allocation) => allocation.role_key === roleKey && allocation.user_discord_id !== userId
+      ).length;
+
+      if (roleCount >= role.max) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "That role is already full."
+        });
+        return true;
+      }
+
+      await deleteStaffFlightAllocationForUser(context, flightId, userId);
+      await insertStaffFlightAllocation(context, {
+        flight_id: flightId,
+        guild_id: interaction.guildId,
+        user_discord_id: userId,
+        role_key: roleKey,
+        role_name: role.name,
+        category_key: role.categoryKey
+      });
+
+      await updateStaffBriefingMessage(interaction.guild!, context, flight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `Assigned <@${userId}> to **${role.name}** for flight **${flight.flight_number}**.`
+      });
+      return true;
+    }
+
+    if (action === "panel-remove-modal") {
+      const flightId = staffParts[3];
+      const userId = parseSingleDiscordSnowflake(interaction.fields.getTextInputValue("user"));
+
+      if (!userId) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Provide a valid staff member mention or Discord ID."
+        });
+        return true;
+      }
+
+      const flight = await fetchStaffFlightById(context, flightId);
+
+      if (!flight) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "That flight could not be found."
+        });
+        return true;
+      }
+
+      await removeStaffFlightAllocation(context, flightId, userId);
+      await updateStaffBriefingMessage(interaction.guild!, context, flight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `Removed any allocation for <@${userId}> from flight **${flight.flight_number}**.`
+      });
+      return true;
+    }
+
+    if (action === "panel-reset-modal") {
+      const flightId = staffParts[3];
+      const confirm = interaction.fields.getTextInputValue("confirm").trim().toUpperCase();
+
+      if (confirm !== "RESET") {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Reset cancelled because the confirmation text did not match."
+        });
+        return true;
+      }
+
+      const flight = await fetchStaffFlightById(context, flightId);
+
+      if (!flight) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "That flight could not be found."
+        });
+        return true;
+      }
+
+      await resetStaffFlightAllocations(context, flightId);
+      await updateStaffBriefingMessage(interaction.guild!, context, flight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `All allocations were reset for flight **${flight.flight_number}**.`
+      });
+      return true;
+    }
+
+    if (action === "panel-cancel-modal") {
+      const flightId = staffParts[3];
+      const confirm = interaction.fields.getTextInputValue("confirm").trim().toUpperCase();
+
+      if (confirm !== "CANCEL") {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "Flight cancellation stopped because the confirmation text did not match."
+        });
+        return true;
+      }
+
+      const flight = await fetchStaffFlightById(context, flightId);
+
+      if (!flight) {
+        await interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "That flight could not be found."
+        });
+        return true;
+      }
+
+      await deleteStaffFlight(interaction.guild!, context, flight);
+      await interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `Flight **${flight.flight_number}** was cancelled and removed.`
+      });
+      return true;
+    }
+
     return false;
   }
 
@@ -3087,6 +3888,15 @@ export async function handleChatInputCommand(
     route.subcommandName === "create"
   ) {
     await handleStaffOpsFlightCreate(interaction, guildConfig);
+    return;
+  }
+
+  if (
+    guildId === DELTA_GUILDS.staff.id &&
+    route.commandName === "ops" &&
+    route.subcommandName === "flightpanel"
+  ) {
+    await handleStaffOpsFlightPanel(interaction, guildConfig, context);
     return;
   }
 
