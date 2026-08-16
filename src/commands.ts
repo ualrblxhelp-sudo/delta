@@ -57,6 +57,8 @@ const academyLocationLinks = {
 const academyGraduationLogThreadId = "1537637855742926918";
 const academyAttendanceLogThreadId = "1537637786817921104";
 const academyDisciplineLogThreadId = "1537712022291222539";
+const deltaStaffOpsRoleId = "1538337702611787776";
+const deltaStaffHrRoleId = "1538337661318729850";
 
 const academyPanelPrefix = "academy-panel";
 const academyPanelPageTrainees = "trainees";
@@ -64,6 +66,7 @@ const academyPanelPageSessions = "sessions";
 
 type CommandRoute = {
   commandName: string;
+  subcommandGroupName?: string;
   subcommandName?: string;
 };
 
@@ -320,6 +323,79 @@ function getGuildCommands(guildId: string): RESTPostAPIApplicationCommandsJSONBo
     ];
   }
 
+  if (guildId === DELTA_GUILDS.staff.id) {
+    return [
+      new SlashCommandBuilder()
+        .setName("ops")
+        .setDescription("Operations command center for staff flight tools.")
+        .addSubcommandGroup((group) =>
+          group
+            .setName("flight")
+            .setDescription("Flight operations creation tools.")
+            .addSubcommand((subcommand) =>
+              subcommand
+                .setName("create")
+                .setDescription("Placeholder command for creating an operations flight.")
+            )
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("flightpanel")
+            .setDescription("Placeholder command for the operations flight panel.")
+        )
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName("hr")
+        .setDescription("Human resources lookup tools for staff.")
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("getinfo")
+            .setDescription("Placeholder command for HR staff information lookups.")
+            .addStringOption((option) =>
+              option
+                .setName("query")
+                .setDescription("Enter a Roblox username or Discord ID.")
+                .setRequired(true)
+            )
+        )
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName("staff")
+        .setDescription("General Delta Staff assistance tools.")
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("inactivity")
+            .setDescription("Placeholder command for staff inactivity notices.")
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("request")
+            .setDescription("Placeholder command for staff requests.")
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("bugfix")
+            .setDescription("Placeholder command for staff bug fix reports.")
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("productrec")
+            .setDescription("Placeholder command for staff product recommendations.")
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("getinfo")
+            .setDescription("Placeholder command for general staff information lookups.")
+        )
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("resign")
+            .setDescription("Placeholder command for staff resignation submissions.")
+        )
+        .toJSON()
+    ];
+  }
+
   return [];
 }
 
@@ -353,12 +429,37 @@ async function memberMeetsMinimumRole(
 function getCommandRoute(interaction: ChatInputCommandInteraction): CommandRoute {
   return {
     commandName: interaction.commandName,
+    subcommandGroupName: interaction.options.getSubcommandGroup(false) ?? undefined,
     subcommandName: interaction.options.getSubcommand(false) ?? undefined
   };
 }
 
 function isInstructorRestrictedRoute(route: CommandRoute): boolean {
   return route.commandName === "instructor" && route.subcommandName !== undefined;
+}
+
+function isStaffOpsRestrictedRoute(route: CommandRoute): boolean {
+  return (
+    route.commandName === "ops" &&
+    ((route.subcommandGroupName === "flight" && route.subcommandName === "create") ||
+      route.subcommandName === "flightpanel")
+  );
+}
+
+function isStaffHrRestrictedRoute(route: CommandRoute): boolean {
+  return route.commandName === "hr" && route.subcommandName === "getinfo";
+}
+
+function memberHasExactRole(
+  interaction: ChatInputCommandInteraction,
+  roleId: string
+): boolean {
+  if (!interaction.inCachedGuild()) {
+    return false;
+  }
+
+  const member = interaction.member as GuildMember;
+  return member.roles.cache.has(roleId);
 }
 
 function isAcademyDepartment(value: string): value is AcademyDepartment {
@@ -1989,6 +2090,42 @@ export async function handleChatInputCommand(
   }
 
   if (
+    guildId === DELTA_GUILDS.staff.id &&
+    isStaffOpsRestrictedRoute(route) &&
+    !memberHasExactRole(interaction, deltaStaffOpsRoleId)
+  ) {
+    await interaction.reply({
+      flags: MessageFlags.Ephemeral,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(guildConfig.embedColor)
+          .setTitle("Access Denied")
+          .setDescription("You do not have the required operations role to use this command.")
+          .setFooter({ text: guildConfig.name })
+      ]
+    });
+    return;
+  }
+
+  if (
+    guildId === DELTA_GUILDS.staff.id &&
+    isStaffHrRestrictedRoute(route) &&
+    !memberHasExactRole(interaction, deltaStaffHrRoleId)
+  ) {
+    await interaction.reply({
+      flags: MessageFlags.Ephemeral,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(guildConfig.embedColor)
+          .setTitle("Access Denied")
+          .setDescription("You do not have the required HR role to use this command.")
+          .setFooter({ text: guildConfig.name })
+      ]
+    });
+    return;
+  }
+
+  if (
     isInstructorRestrictedRoute(route) &&
     guildConfig.minimumInstructorRoleId &&
     !(await memberMeetsMinimumRole(interaction, guildConfig.minimumInstructorRoleId))
@@ -2028,9 +2165,11 @@ export async function handleChatInputCommand(
     return;
   }
 
-  const commandPath = route.subcommandName
-    ? `/${route.commandName} ${route.subcommandName}`
-    : `/${route.commandName}`;
+  const commandPath = route.subcommandGroupName
+    ? `/${route.commandName} ${route.subcommandGroupName} ${route.subcommandName ?? ""}`.trim()
+    : route.subcommandName
+      ? `/${route.commandName} ${route.subcommandName}`
+      : `/${route.commandName}`;
 
   await interaction.reply({
     flags: MessageFlags.Ephemeral,
